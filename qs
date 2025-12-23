@@ -107,12 +107,26 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server, rate, path):
         self.rate           = rate * 1024
         self.bucket         = TokenBucket()
-        self.directory      = path
         self.bucket.set_rate(self.rate)
-        SocketServer.BaseRequestHandler.__init__(self,
-                                                 request,
-                                                 client_address,
-                                                 server)
+        if sys.version_info[0] == 3:
+            try:
+                SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self,
+                                                                  request,
+                                                                  client_address,
+                                                                  server,
+                                                                  directory=path)
+            except TypeError:
+                SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self,
+                                                                  request,
+                                                                  client_address,
+                                                                  server)
+                self.directory = path
+        else:
+            SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self,
+                                                              request,
+                                                              client_address,
+                                                              server)
+            self.directory = path
 
     def copyfile(self, source, outputfile):
         self.copyfileobj(source, outputfile)
