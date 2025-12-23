@@ -108,8 +108,7 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server, rate, path):
         self._range         = None
         self.rate           = rate * 1024
-        self.bucket         = TokenBucket()
-        self.bucket.set_rate(self.rate)
+        self.bucket         = server.bucket  # FIX 3: Use shared bucket from server
         if sys.version_info[0] == 3:
             try:
                 SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self,
@@ -281,7 +280,9 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             print(" - - [%s] SENT -" % time.strftime("%d/%b/%Y %H:%M:%S"))
 
 
-class _TCPServer(SocketServer.TCPServer):
+class _TCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):  # FIX 2: Add ThreadingMixIn
+    allow_reuse_address = True  # FIX 1: Allow socket reuse
+    
     def __init__(self,
                  server_address,
                  RequestHandlerClass,
@@ -290,6 +291,8 @@ class _TCPServer(SocketServer.TCPServer):
                  bind_and_activate=True):
         self.rate = rate
         self.path = path
+        self.bucket = TokenBucket()  # FIX 3: Create shared bucket
+        self.bucket.set_rate(rate * 1024)  # FIX 3: Initialize shared bucket
         SocketServer.TCPServer.__init__(self,
                                         server_address,
                                         RequestHandlerClass,
@@ -327,10 +330,12 @@ def share(share_queue, port, rate, search_free):
     except SocketServer.socket.error:
         print("Port already in use: " + str(port))
 
-        if search_free:
+        if search_free and port < 65535:  # FIX 4: Add port limit check
             print("Trying on port " + str(port + 1))
             share(share_queue, port + 1, rate, search_free)
         else:
+            if port >= 65535:  # FIX 4: Inform user about port limit
+                print("Reached maximum port number (65535)")
             exit(1)
 
     else:
@@ -351,7 +356,7 @@ def get_ip():
         # doesn't even have to be reachable
         s.connect(('10.255.255.255', 0))
         IP = s.getsockname()[0]
-    except:
+    except Exception:  # FIX 5: Change bare except to Exception
         IP = '127.0.0.1'
     finally:
         s.close()
@@ -380,3 +385,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
