@@ -119,31 +119,159 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                 SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self,
                                                                   request,
                                                                   client_address,
-                                                                  server)
-                self.directory = path
+                                                              server)
+            self.directory = path
         else:
             SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self,
                                                               request,
                                                               client_address,
                                                               server)
             self.directory = path
+        self._range = None
+
+    def _send_range_not_satisfiable(self, file_size):
+        self.send_response(416)
+        self.send_header("Content-Range", "bytes */%d" % file_size)
+        self.end_headers()
+        return None
+
+    def _parse_range_header(self, header, file_size):
+        if not header.startswith("bytes="):
+            return (None, None)
+
+        range_spec = header[len("bytes="):].strip()
+        if not range_spec or "," in range_spec:
+            return (None, None)
+
+        if "-" not in range_spec:
+            return (None, None)
+
+        start_str, end_str = range_spec.split("-", 1)
+        if file_size <= 0:
+            return (None, None)
+
+        if start_str == "":
+            try:
+                suffix_len = int(end_str)
+            except ValueError:
+                return (None, None)
+            if suffix_len <= 0:
+                return (None, None)
+            if suffix_len > file_size:
+                suffix_len = file_size
+            return (file_size - suffix_len, file_size - 1)
+
+        try:
+            start = int(start_str)
+        except ValueError:
+            return (None, None)
+        if start < 0:
+            return (None, None)
+
+        if end_str == "":
+            end = file_size - 1
+        else:
+            try:
+                end = int(end_str)
+            except ValueError:
+                return (None, None)
+            if end < 0:
+                return (None, None)
+
+        if start >= file_size or end < start:
+            return (None, None)
+        if end >= file_size:
+            end = file_size - 1
+
+        return (start, end)
+
+    def send_head(self):
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            if not self.path.endswith('/'):
+                self.send_response(301)
+                self.send_header("Location", self.path + "/")
+                self.end_headers()
+                return None
+            for index in ("index.html", "index.htm"):
+                index = os.path.join(path, index)
+                if os.path.exists(index):
+                    path = index
+                    break
+            else:
+                return self.list_directory(path)
+
+        ctype = self.guess_type(path)
+        try:
+            f = open(path, 'rb')
+        except IOError:
+            self.send_error(404, "File not found")
+            return None
+
+        fs = os.fstat(f.fileno())
+        file_size = fs[6]
+
+        range_header = self.headers.get("Range")
+        if range_header:
+            start, end = self._parse_range_header(range_header, file_size)
+            if start is None:
+                f.close()
+                return self._send_range_not_satisfiable(file_size)
+
+            self._range = (start, end)
+            self.send_response(206)
+            self.send_header("Content-type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range",
+                             "bytes %d-%d/%d" % (start, end, file_size))
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
+            self.end_headers()
+            return f
+
+        self._range = None
+        self.send_response(200)
+        self.send_header("Content-type", ctype)
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Last-Modified", self.date_time_string(fs.st_mtime))
+        self.end_headers()
+        return f
 
     def copyfile(self, source, outputfile):
-        self.copyfileobj(source, outputfile)
+        if self._range:
+            start, end = self._range
+            source.seek(start)
+            self.copyfileobj(source,
+                             outputfile,
+                             remaining=(end - start + 1))
+        else:
+            self.copyfileobj(source, outputfile)
 
-    def copyfileobj(self, fsrc, fdst, length=16*1024):
+    def copyfileobj(self, fsrc, fdst, length=16*1024, remaining=None):
         """
         copy data from file-like object fsrc to file-like object fdst
         overidden to include token bucket rate limiting
         """
+        done = False
         while 1:
+            if remaining is not None and remaining <= 0:
+                done = True
+                break
+            read_len = length
+            if remaining is not None:
+                read_len = min(length, remaining)
             if self.rate != 0:
-                time.sleep(self.bucket.consume(length))
-            buf = fsrc.read(length)
+                time.sleep(self.bucket.consume(read_len))
+            buf = fsrc.read(read_len)
             if not buf:
-                print(" - - [%s] SENT -" % time.strftime("%d/%b/%Y %H:%M:%S"))
+                done = True
                 break
             fdst.write(buf)
+            if remaining is not None:
+                remaining -= len(buf)
+        if done:
+            print(" - - [%s] SENT -" % time.strftime("%d/%b/%Y %H:%M:%S"))
 
 
 class _TCPServer(SocketServer.TCPServer):
