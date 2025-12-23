@@ -49,6 +49,7 @@ import os
 import sys
 import time
 import socket
+import errno
 import tempfile
 from docopt    import docopt
 from threading import Lock
@@ -253,10 +254,10 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
         copy data from file-like object fsrc to file-like object fdst
         overidden to include token bucket rate limiting
         """
-        done = False
+        completed = False
         while 1:
             if remaining is not None and remaining <= 0:
-                done = True
+                completed = True
                 break
             read_len = length
             if remaining is not None:
@@ -265,12 +266,18 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                 time.sleep(self.bucket.consume(read_len))
             buf = fsrc.read(read_len)
             if not buf:
-                done = True
+                completed = True
                 break
-            fdst.write(buf)
+            try:
+                fdst.write(buf)
+            except (OSError, IOError) as exc:
+                err_no = getattr(exc, "errno", None)
+                if err_no in (errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED):
+                    break
+                raise
             if remaining is not None:
                 remaining -= len(buf)
-        if done:
+        if completed:
             print(" - - [%s] SENT -" % time.strftime("%d/%b/%Y %H:%M:%S"))
 
 
