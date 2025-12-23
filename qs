@@ -105,6 +105,7 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     """
 
     def __init__(self, request, client_address, server, rate, path):
+        self._range         = None
         self.rate           = rate * 1024
         self.bucket         = TokenBucket()
         self.bucket.set_rate(self.rate)
@@ -127,7 +128,6 @@ class HTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                                                               client_address,
                                                               server)
             self.directory = path
-        self._range = None
 
     def _send_range_not_satisfiable(self, file_size):
         self.send_response(416)
